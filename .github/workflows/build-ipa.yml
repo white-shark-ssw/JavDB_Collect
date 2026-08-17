@@ -18,6 +18,34 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Prepare app icon
+        run: |
+          set -euo pipefail
+          ICON_DIR="JavDBCollect/Assets.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICON_DIR"
+          cat JavDBCollect/Resources/AppIcon.b64.00 \
+              JavDBCollect/Resources/AppIcon.b64.01 \
+              JavDBCollect/Resources/AppIcon.b64.02 \
+              JavDBCollect/Resources/AppIcon.b64.03 \
+              JavDBCollect/Resources/AppIcon.b64.04 | base64 --decode > "$ICON_DIR/AppIcon-1024.png"
+          cat > "$ICON_DIR/Contents.json" <<'JSON'
+          {
+            "images" : [
+              {
+                "filename" : "AppIcon-1024.png",
+                "idiom" : "universal",
+                "platform" : "ios",
+                "size" : "1024x1024"
+              }
+            ],
+            "info" : {
+              "author" : "xcode",
+              "version" : 1
+            }
+          }
+          JSON
+          sips -g pixelWidth -g pixelHeight "$ICON_DIR/AppIcon-1024.png"
+
       - name: Generate Xcode project
         run: xcodegen generate
 
