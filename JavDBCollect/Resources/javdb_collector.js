@@ -2,10 +2,35 @@
     if (window.JavDBCollect) return;
 
     const bridge = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.javdbCollect;
+    const originKey = 'jdcMovieOrigin';
+    const restoreKey = 'jdcRestoreOrigin';
     let reportTimer = null;
+    let restoreTimer = null;
 
     function post(message) {
         if (bridge) bridge.postMessage(message);
+    }
+
+    function sessionGet(key) {
+        try { return sessionStorage.getItem(key); } catch (_) { return null; }
+    }
+
+    function sessionSet(key, value) {
+        try { sessionStorage.setItem(key, value); return true; } catch (_) { return false; }
+    }
+
+    function sessionRemove(key) {
+        try { sessionStorage.removeItem(key); } catch (_) {}
+    }
+
+    function normalizedPageURL(value) {
+        try {
+            const url = new URL(value, location.href);
+            url.hash = '';
+            return url.href;
+        } catch (_) {
+            return String(value || '');
+        }
     }
 
     function movieIdFromURL(value) {
@@ -36,6 +61,79 @@
     function scheduleVisibleReport() {
         clearTimeout(reportTimer);
         reportTimer = setTimeout(() => post({ type: 'visibleMovies', ids: visibleMovieIds() }), 180);
+    }
+
+    function captureMovieOrigin(event) {
+        const target = event.target instanceof Element ? event.target : null;
+        const anchor = target?.closest('a[href*="/v/"]');
+        if (!anchor) return;
+        const id = movieIdFromURL(anchor.href);
+        if (!id) return;
+        const host = anchor.closest('.item') || anchor;
+        const rect = host.getBoundingClientRect();
+        const state = {
+            id,
+            url: normalizedPageURL(location.href),
+            scrollY: Math.max(window.scrollY || document.documentElement.scrollTop || 0, 0),
+            viewportTop: Number.isFinite(rect.top) ? rect.top : 0,
+            capturedAt: Date.now()
+        };
+        sessionSet(originKey, JSON.stringify(state));
+    }
+
+    function armReturnToOrigin(id) {
+        try {
+            const origin = JSON.parse(sessionGet(originKey) || 'null');
+            if (!origin || origin.id !== id || !origin.url) return false;
+            sessionSet(restoreKey, JSON.stringify(origin));
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function findMovieAnchor(id) {
+        return Array.from(document.querySelectorAll('a[href*="/v/"]')).find(anchor => movieIdFromURL(anchor.href) === id) || null;
+    }
+
+    function maybeRestoreOrigin() {
+        if (restoreTimer !== null) return;
+        let state;
+        try { state = JSON.parse(sessionGet(restoreKey) || 'null'); } catch (_) { state = null; }
+        if (!state || !state.id || !state.url) return;
+        if (normalizedPageURL(location.href) !== state.url) return;
+
+        let attempts = 0;
+        let foundCount = 0;
+        restoreTimer = -1;
+
+        const step = () => {
+            attempts += 1;
+            const savedY = Math.max(Number(state.scrollY) || 0, 0);
+            const anchor = findMovieAnchor(state.id);
+            if (!anchor) {
+                window.scrollTo(0, savedY);
+            } else {
+                const host = anchor.closest('.item') || anchor;
+                const desiredTop = Number(state.viewportTop);
+                if (Number.isFinite(desiredTop)) {
+                    const delta = host.getBoundingClientRect().top - desiredTop;
+                    if (Math.abs(delta) > 2) window.scrollBy(0, delta);
+                } else {
+                    host.scrollIntoView({ block: 'center', behavior: 'auto' });
+                }
+                foundCount += 1;
+            }
+
+            if ((foundCount >= 3 && attempts >= 3) || attempts >= 24) {
+                sessionRemove(restoreKey);
+                restoreTimer = null;
+                return;
+            }
+            restoreTimer = setTimeout(step, foundCount > 0 ? 220 : 160);
+        };
+
+        step();
     }
 
     function extractCode() {
@@ -154,10 +252,25 @@
         }
     }
 
-    const observer = new MutationObserver(scheduleVisibleReport);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener('load', scheduleVisibleReport, { once: true });
+    document.addEventListener('click', captureMovieOrigin, true);
+    window.addEventListener('pageshow', () => {
+        scheduleVisibleReport();
+        setTimeout(maybeRestoreOrigin, 30);
+    });
 
-    window.JavDBCollect = { collectCurrent, applyCollected, reportVisible: scheduleVisibleReport };
-    setTimeout(scheduleVisibleReport, 250);
+    const observer = new MutationObserver(() => {
+        scheduleVisibleReport();
+        maybeRestoreOrigin();
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    window.addEventListener('load', () => {
+        scheduleVisibleReport();
+        setTimeout(maybeRestoreOrigin, 30);
+    }, { once: true });
+
+    window.JavDBCollect = { collectCurrent, applyCollected, reportVisible: scheduleVisibleReport, armReturnToOrigin, restoreOrigin: maybeRestoreOrigin };
+    setTimeout(() => {
+        scheduleVisibleReport();
+        maybeRestoreOrigin();
+    }, 250);
 })();
