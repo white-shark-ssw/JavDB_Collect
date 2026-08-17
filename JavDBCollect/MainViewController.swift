@@ -204,8 +204,15 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
                     self.refreshCollectedMarks()
                     return
                 }
-                guard let scored = ResourceScorer.best(from: movie.candidates) else {
-                    self.showAlert(title: "没有可用磁链", message: "没有找到符合规则的资源，或候选资源均被 ISO/原盘规则排除。")
+
+                let sizedCandidates = movie.candidates.filter { $0.sizeGB >= ResourceScorer.minimumSizeGB }
+                guard !sizedCandidates.isEmpty else {
+                    self.showToast("资源低于 1GB，不进行采集", duration: 1.0)
+                    return
+                }
+
+                guard let scored = ResourceScorer.best(from: sizedCandidates) else {
+                    self.showAlert(title: "没有可用磁链", message: "没有找到符合规则的资源，或候选资源均被 ISO 规则排除。")
                     return
                 }
                 guard self.store.add(movie: movie, magnet: scored.candidate.magnet) else {
@@ -260,7 +267,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         present(alert, animated: true)
     }
 
-    private func showToast(_ text: String) {
+    private func showToast(_ text: String, duration: TimeInterval = 1.6) {
         let label = UILabel()
         label.numberOfLines = 0
         label.text = "  \(text)  "
@@ -280,7 +287,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         ])
         label.alpha = 0
         UIView.animate(withDuration: 0.2, animations: { label.alpha = 1 }) { _ in
-            UIView.animate(withDuration: 0.25, delay: 1.6, options: [.curveEaseInOut], animations: { label.alpha = 0 }) { _ in label.removeFromSuperview() }
+            UIView.animate(withDuration: 0.25, delay: duration, options: [.curveEaseInOut], animations: { label.alpha = 0 }) { _ in label.removeFromSuperview() }
         }
     }
 }
