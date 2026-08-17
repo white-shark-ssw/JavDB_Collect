@@ -26,6 +26,7 @@ struct MoviePayload: Decodable {
     let title: String
     let coverUrl: String
     let candidates: [MagnetCandidate]
+    let isVR: Bool
 }
 
 struct ParseEnvelope: Decodable {
@@ -35,14 +36,10 @@ struct ParseEnvelope: Decodable {
     let title: String?
     let coverUrl: String?
     let candidates: [MagnetCandidate]?
+    let isVR: Bool?
 
     var moviePayload: MoviePayload? {
-        guard error == nil,
-              let javdbId,
-              let code,
-              let title,
-              let coverUrl,
-              let candidates else { return nil }
-        return MoviePayload(javdbId: javdbId, code: code, title: title, coverUrl: coverUrl, candidates: candidates)
+        guard error == nil, let javdbId, let code, let title, let coverUrl, let candidates else { return nil }
+        return MoviePayload(javdbId: javdbId, code: code, title: title, coverUrl: coverUrl, candidates: candidates, isVR: isVR ?? false)
     }
 }
