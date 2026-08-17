@@ -5,6 +5,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private let store = CollectionStore.shared
     private var webView: WKWebView!
     private let floatingButton = UIButton(type: .system)
+    private var collectorScriptSource: String?
+    private var floatingCenterXConstraint: NSLayoutConstraint!
+    private var floatingCenterYConstraint: NSLayoutConstraint!
+    private var isDraggingFloatingButton = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -14,11 +18,17 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         loadHome()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if !isDraggingFloatingButton { restoreFloatingButtonPosition() }
+    }
+
     deinit { webView?.configuration.userContentController.removeScriptMessageHandler(forName: "javdbCollect") }
 
     private func configureWebView() {
         let contentController = WKUserContentController()
         if let url = Bundle.main.url(forResource: "javdb_collector", withExtension: "js"), let script = try? String(contentsOf: url) {
+            collectorScriptSource = script
             contentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
         contentController.add(self, name: "javdbCollect")
@@ -60,14 +70,84 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
             UIAction(title: "刷新页面", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.webView.reload() }
         ])
         floatingButton.showsMenuAsPrimaryAction = true
+
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleFloatingButtonLongPress(_:)))
+        longPress.minimumPressDuration = 0.35
+        longPress.cancelsTouchesInView = true
+        floatingButton.addGestureRecognizer(longPress)
         view.addSubview(floatingButton)
 
+        floatingCenterXConstraint = floatingButton.centerXAnchor.constraint(equalTo: view.leadingAnchor)
+        floatingCenterYConstraint = floatingButton.centerYAnchor.constraint(equalTo: view.topAnchor)
         NSLayoutConstraint.activate([
             floatingButton.widthAnchor.constraint(equalToConstant: 56),
             floatingButton.heightAnchor.constraint(equalToConstant: 56),
-            floatingButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            floatingButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18)
+            floatingCenterXConstraint,
+            floatingCenterYConstraint
         ])
+    }
+
+    private func floatingMovementFrame() -> CGRect {
+        let safe = view.safeAreaLayoutGuide.layoutFrame
+        let frame = safe.insetBy(dx: 32, dy: 32)
+        return frame.width > 0 && frame.height > 0 ? frame : view.bounds.insetBy(dx: 32, dy: 32)
+    }
+
+    private func restoreFloatingButtonPosition() {
+        let frame = floatingMovementFrame()
+        guard frame.width > 0, frame.height > 0 else { return }
+        let defaults = UserDefaults.standard
+        let hasSaved = defaults.object(forKey: "jdcFloatingX") != nil && defaults.object(forKey: "jdcFloatingY") != nil
+        let x: CGFloat
+        let y: CGFloat
+        if hasSaved {
+            let xr = CGFloat(min(max(defaults.double(forKey: "jdcFloatingX"), 0), 1))
+            let yr = CGFloat(min(max(defaults.double(forKey: "jdcFloatingY"), 0), 1))
+            x = frame.minX + frame.width * xr
+            y = frame.minY + frame.height * yr
+        } else {
+            x = frame.maxX
+            y = frame.maxY
+        }
+        floatingCenterXConstraint.constant = x
+        floatingCenterYConstraint.constant = y
+    }
+
+    private func clampedFloatingPoint(_ point: CGPoint) -> CGPoint {
+        let frame = floatingMovementFrame()
+        return CGPoint(x: min(max(point.x, frame.minX), frame.maxX), y: min(max(point.y, frame.minY), frame.maxY))
+    }
+
+    private func saveFloatingButtonPosition() {
+        let frame = floatingMovementFrame()
+        guard frame.width > 0, frame.height > 0 else { return }
+        let xr = Double((floatingCenterXConstraint.constant - frame.minX) / frame.width)
+        let yr = Double((floatingCenterYConstraint.constant - frame.minY) / frame.height)
+        UserDefaults.standard.set(min(max(xr, 0), 1), forKey: "jdcFloatingX")
+        UserDefaults.standard.set(min(max(yr, 0), 1), forKey: "jdcFloatingY")
+    }
+
+    @objc private func handleFloatingButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
+        let point = clampedFloatingPoint(gesture.location(in: view))
+        switch gesture.state {
+        case .began:
+            isDraggingFloatingButton = true
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            UIView.animate(withDuration: 0.15) { self.floatingButton.transform = CGAffineTransform(scaleX: 1.08, y: 1.08) }
+            floatingCenterXConstraint.constant = point.x
+            floatingCenterYConstraint.constant = point.y
+        case .changed:
+            floatingCenterXConstraint.constant = point.x
+            floatingCenterYConstraint.constant = point.y
+        case .ended, .cancelled, .failed:
+            floatingCenterXConstraint.constant = point.x
+            floatingCenterYConstraint.constant = point.y
+            saveFloatingButtonPosition()
+            isDraggingFloatingButton = false
+            UIView.animate(withDuration: 0.18) { self.floatingButton.transform = .identity }
+        default:
+            break
+        }
     }
 
     private func loadHome() {
@@ -75,37 +155,51 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         webView.load(URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30))
     }
 
+    private func ensureCollectorScript(_ completion: @escaping (Bool) -> Void) {
+        webView.evaluateJavaScript("typeof window.JavDBCollect !== 'undefined'") { [weak self] result, _ in
+            if (result as? Bool) == true { completion(true); return }
+            guard let self, let script = self.collectorScriptSource, !script.isEmpty else { completion(false); return }
+            self.webView.evaluateJavaScript(script) { _, error in completion(error == nil) }
+        }
+    }
+
     private func collectCurrentMovie() {
-        let script = "window.JavDBCollect ? window.JavDBCollect.collectCurrent() : JSON.stringify({error:'script_missing'})"
-        webView.evaluateJavaScript(script) { [weak self] result, error in
+        ensureCollectorScript { [weak self] ready in
             guard let self else { return }
-            if let error { self.showAlert(title: "采集失败", message: error.localizedDescription); return }
-            guard let json = result as? String, let data = json.data(using: .utf8), let envelope = try? JSONDecoder().decode(ParseEnvelope.self, from: data) else {
-                self.showAlert(title: "采集失败", message: "无法解析当前页面。")
+            guard ready else {
+                self.showAlert(title: "采集脚本未加载", message: "采集脚本没有进入 App 包或网页注入失败，请安装最新版本后重试。")
                 return
             }
-            if let error = envelope.error {
-                let message = error == "not_detail_page" ? "请先进入一个影片详情页。" : "页面采集脚本未就绪。"
-                self.showAlert(title: "无法采集", message: message)
-                return
-            }
-            guard let movie = envelope.moviePayload else { self.showAlert(title: "采集失败", message: "影片信息不完整。"); return }
-            if self.store.contains(javdbID: movie.javdbId) {
-                self.showToast("✓ 已采集过 \(movie.code)")
+            self.webView.evaluateJavaScript("window.JavDBCollect.collectCurrent()") { [weak self] result, error in
+                guard let self else { return }
+                if let error { self.showAlert(title: "采集失败", message: error.localizedDescription); return }
+                guard let json = result as? String, let data = json.data(using: .utf8), let envelope = try? JSONDecoder().decode(ParseEnvelope.self, from: data) else {
+                    self.showAlert(title: "采集失败", message: "无法解析当前页面。")
+                    return
+                }
+                if let error = envelope.error {
+                    let message = error == "not_detail_page" ? "请先进入一个影片详情页。" : "页面采集脚本未就绪。"
+                    self.showAlert(title: "无法采集", message: message)
+                    return
+                }
+                guard let movie = envelope.moviePayload else { self.showAlert(title: "采集失败", message: "影片信息不完整。"); return }
+                if self.store.contains(javdbID: movie.javdbId) {
+                    self.showToast("✓ 已采集过 \(movie.code)")
+                    self.refreshCollectedMarks()
+                    return
+                }
+                guard let scored = ResourceScorer.best(from: movie.candidates) else {
+                    self.showAlert(title: "没有可用磁链", message: "没有找到符合规则的资源，或候选资源均被 ISO/原盘规则排除。")
+                    return
+                }
+                guard self.store.add(movie: movie, magnet: scored.candidate.magnet) else {
+                    self.showAlert(title: "保存失败", message: "无法写入本地采集数据库。")
+                    return
+                }
+                let detail = scored.candidate.meta.isEmpty ? scored.candidate.name : scored.candidate.meta
+                self.showToast("✓ 已采集 \(movie.code)\n\(detail)")
                 self.refreshCollectedMarks()
-                return
             }
-            guard let scored = ResourceScorer.best(from: movie.candidates) else {
-                self.showAlert(title: "没有可用磁链", message: "没有找到符合规则的资源，或候选资源均被 ISO/原盘规则排除。")
-                return
-            }
-            guard self.store.add(movie: movie, magnet: scored.candidate.magnet) else {
-                self.showAlert(title: "保存失败", message: "无法写入本地采集数据库。")
-                return
-            }
-            let detail = scored.candidate.meta.isEmpty ? scored.candidate.name : scored.candidate.meta
-            self.showToast("✓ 已采集 \(movie.code)\n\(detail)")
-            self.refreshCollectedMarks()
         }
     }
 
@@ -118,12 +212,18 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     private func refreshCollectedMarks() {
-        webView.evaluateJavaScript("window.JavDBCollect && window.JavDBCollect.reportVisible()")
+        ensureCollectorScript { [weak self] ready in
+            guard ready else { return }
+            self?.webView.evaluateJavaScript("window.JavDBCollect.reportVisible()")
+        }
     }
 
     private func applyCollected(ids: [String]) {
         guard let data = try? JSONSerialization.data(withJSONObject: ids), let json = String(data: data, encoding: .utf8) else { return }
-        webView.evaluateJavaScript("window.JavDBCollect && window.JavDBCollect.applyCollected(\(json))")
+        ensureCollectorScript { [weak self] ready in
+            guard ready else { return }
+            self?.webView.evaluateJavaScript("window.JavDBCollect.applyCollected(\(json))")
+        }
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
