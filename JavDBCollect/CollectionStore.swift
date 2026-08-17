@@ -19,7 +19,7 @@ final class CollectionStore {
         let baseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         let databaseURL = baseURL.appendingPathComponent("javdb_collect.sqlite3")
         if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            print("[JavDBCollect] sqlite open failed: \(String(cString: sqlite3_errmsg(db)))")
+            print("[JavDBCollect] sqlite open failed: \(errorMessage)")
         }
     }
 
@@ -124,7 +124,7 @@ final class CollectionStore {
     }
 
     private func bind(_ value: String, to statement: OpaquePointer?, at index: Int32) {
-        sqlite3_bind_text(statement, index, value, -1, SQLITE_TRANSIENT_JDC)
+        value.withCString { pointer in sqlite3_bind_text(statement, index, pointer, -1, SQLITE_TRANSIENT_JDC) }
     }
 
     private func text(from statement: OpaquePointer?, at index: Int32) -> String {
