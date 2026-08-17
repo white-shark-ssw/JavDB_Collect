@@ -102,16 +102,19 @@ final class CollectionCenterViewController: UIViewController, UITableViewDataSou
     }
 
     func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard currentStatus == 0 else { return nil }
+        let status = currentStatus
         let record = records[indexPath.row]
-        let delete = UIContextualAction(style: .destructive, title: "撤销") { [weak self] _, _, completion in
+        let title = status == 0 ? "撤销" : "删除"
+        let delete = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, completion in
             guard let self else { completion(false); return }
-            self.store.deleteCurrent(id: record.id)
+            self.store.delete(id: record.id, status: status)
             self.reloadData()
             self.onDatabaseChanged?()
             completion(true)
         }
-        return UISwipeActionsConfiguration(actions: [delete])
+        let configuration = UISwipeActionsConfiguration(actions: [delete])
+        configuration.performsFirstActionWithFullSwipe = true
+        return configuration
     }
 
     private func showMessage(_ message: String) {
