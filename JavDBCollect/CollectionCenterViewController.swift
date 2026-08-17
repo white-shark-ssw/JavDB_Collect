@@ -1,6 +1,7 @@
 import UIKit
+import UniformTypeIdentifiers
 
-final class CollectionCenterViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class CollectionCenterViewController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate {
     private let store: CollectionStore
     private let segmentedControl = UISegmentedControl(items: ["本次采集", "历史"])
     private let tableView = UITableView(frame: .zero, style: .insetGrouped)
@@ -60,11 +61,16 @@ final class CollectionCenterViewController: UIViewController, UITableViewDataSou
     }
 
     private func updateToolbar() {
-        guard segmentedControl.selectedSegmentIndex == 0 else { toolbarItems = []; return }
-        let copy = UIBarButtonItem(title: "复制全部", style: .done, target: self, action: #selector(copyAll))
         let flexible = UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil)
-        let clear = UIBarButtonItem(title: "清理本次", style: .plain, target: self, action: #selector(clearCurrent))
-        toolbarItems = [copy, flexible, clear]
+        if segmentedControl.selectedSegmentIndex == 0 {
+            let copy = UIBarButtonItem(title: "复制全部", style: .done, target: self, action: #selector(copyAll))
+            let clear = UIBarButtonItem(title: "清理本次", style: .plain, target: self, action: #selector(clearCurrent))
+            toolbarItems = [copy, flexible, clear]
+        } else {
+            let importButton = UIBarButtonItem(title: "导入数据库", style: .plain, target: self, action: #selector(importDatabase))
+            let exportButton = UIBarButtonItem(title: "导出数据库", style: .done, target: self, action: #selector(exportDatabase))
+            toolbarItems = [importButton, flexible, exportButton]
+        }
     }
 
     @objc private func copyAll() {
@@ -84,6 +90,37 @@ final class CollectionCenterViewController: UIViewController, UITableViewDataSou
             self.store.moveCurrentToHistory()
             self.reloadData()
             self.onDatabaseChanged?()
+        })
+        present(alert, animated: true)
+    }
+
+    @objc private func exportDatabase() {
+        guard let url = store.makeDatabaseExport() else { showMessage("数据库导出失败"); return }
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        present(picker, animated: true)
+    }
+
+    @objc private func importDatabase() {
+        let sqliteType = UTType(filenameExtension: "sqlite3") ?? .data
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [sqliteType, .data], asCopy: true)
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        present(picker, animated: true)
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        guard let url = urls.first else { return }
+        let alert = UIAlertController(title: "导入数据库", message: "导入会覆盖当前 App 内的本次采集和历史记录。确定继续吗？", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "覆盖导入", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            let success = self.store.importDatabase(from: url)
+            if accessing { url.stopAccessingSecurityScopedResource() }
+            guard success else { self.showMessage("数据库格式不兼容或导入失败"); return }
+            self.reloadData()
+            self.onDatabaseChanged?()
+            self.showMessage("数据库导入成功")
         })
         present(alert, animated: true)
     }
