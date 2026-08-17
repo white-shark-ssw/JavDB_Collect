@@ -27,7 +27,9 @@ jobs:
               JavDBCollect/Resources/AppIcon.b64.01 \
               JavDBCollect/Resources/AppIcon.b64.02 \
               JavDBCollect/Resources/AppIcon.b64.03 \
-              JavDBCollect/Resources/AppIcon.b64.04 | base64 --decode > "$ICON_DIR/AppIcon-1024.png"
+              JavDBCollect/Resources/AppIcon.b64.04 | base64 --decode > "$ICON_DIR/AppIcon-source.png"
+          sips -z 1024 1024 "$ICON_DIR/AppIcon-source.png" --out "$ICON_DIR/AppIcon-1024.png" >/dev/null
+          rm "$ICON_DIR/AppIcon-source.png"
           cat > "$ICON_DIR/Contents.json" <<'JSON'
           {
             "images" : [
