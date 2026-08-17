@@ -6,6 +6,7 @@
     const restoreKey = 'jdcRestoreOrigin';
     let reportTimer = null;
     let restoreTimer = null;
+    let batchRefreshTimer = null;
     let batchMode = false;
     let batchSelected = new Map();
     let collectedIds = new Set();
@@ -14,6 +15,10 @@
     function sessionGet(key) { try { return sessionStorage.getItem(key); } catch (_) { return null; } }
     function sessionSet(key, value) { try { sessionStorage.setItem(key, value); return true; } catch (_) { return false; } }
     function sessionRemove(key) { try { sessionStorage.removeItem(key); } catch (_) {} }
+    function escapeCSS(value) {
+        if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+        return String(value).replace(/["\\]/g, '\\$&');
+    }
 
     function normalizedPageURL(value) {
         try { const url = new URL(value, location.href); url.hash = ''; return url.href; } catch (_) { return String(value || ''); }
@@ -52,7 +57,7 @@
     function captureMovieOrigin(event) {
         if (batchMode) return;
         const target = event.target instanceof Element ? event.target : null;
-        const anchor = target?.closest('a[href*="/v/"]');
+        const anchor = target ? target.closest('a[href*="/v/"]') : null;
         if (!anchor) return;
         const id = movieIdFromURL(anchor.href);
         if (!id) return;
@@ -70,7 +75,9 @@
         } catch (_) { return false; }
     }
 
-    function findMovieAnchor(id) { return Array.from(document.querySelectorAll('a[href*="/v/"]')).find(anchor => movieIdFromURL(anchor.href) === id) || null; }
+    function findMovieAnchor(id) {
+        return Array.from(document.querySelectorAll('a[href*="/v/"]')).find(anchor => movieIdFromURL(anchor.href) === id) || null;
+    }
 
     function maybeRestoreOrigin() {
         if (restoreTimer !== null) return;
@@ -95,7 +102,11 @@
                 } else host.scrollIntoView({ block: 'center', behavior: 'auto' });
                 foundCount += 1;
             }
-            if ((foundCount >= 3 && attempts >= 3) || attempts >= 24) { sessionRemove(restoreKey); restoreTimer = null; return; }
+            if ((foundCount >= 3 && attempts >= 3) || attempts >= 24) {
+                sessionRemove(restoreKey);
+                restoreTimer = null;
+                return;
+            }
             restoreTimer = setTimeout(step, foundCount > 0 ? 220 : 160);
         };
         step();
@@ -109,7 +120,10 @@
             const match = text.match(/(?:番號|番号|ID)\s*[:：]?\s*([A-Za-z0-9]+[-_][A-Za-z0-9]+)/i);
             if (match) code = match[1].toUpperCase();
         });
-        if (!code) { const match = document.title.match(/\b([A-Za-z]{2,12}[-_]\d{2,6})\b/i); if (match) code = match[1].toUpperCase(); }
+        if (!code) {
+            const match = document.title.match(/\b([A-Za-z]{2,12}[-_]\d{2,6})\b/i);
+            if (match) code = match[1].toUpperCase();
+        }
         return code;
     }
 
@@ -132,6 +146,7 @@
         const rows = Array.from(document.querySelectorAll('#magnets-content .item'));
         const candidates = [];
         const seen = new Set();
+
         function appendFromRow(row) {
             const anchor = row.querySelector('a[href^="magnet:"]');
             if (!anchor || seen.has(anchor.href)) return;
@@ -141,6 +156,7 @@
             const tags = Array.from(row.querySelectorAll('.tag')).map(tag => (tag.textContent || '').trim()).filter(Boolean);
             candidates.push({ magnet: anchor.href, name, meta, tags, sizeGB: parseSizeGB(meta), fileCount: parseFileCount(meta) });
         }
+
         rows.forEach(appendFromRow);
         if (!rows.length) document.querySelectorAll('a[href^="magnet:"]').forEach(anchor => appendFromRow(anchor.closest('.item') || anchor.parentElement || anchor));
         return candidates;
@@ -169,9 +185,8 @@
         const image = anchor.querySelector('img') || anchor.closest('.item')?.querySelector('img');
         if (!image) return;
         const host = anchor.closest('.item') || anchor;
-        if (host.querySelector(`.jdc-collected-badge[data-jdc-id="${CSS.escape(id)}"]`)) return;
-        const style = getComputedStyle(host);
-        if (style.position === 'static') host.style.position = 'relative';
+        if (host.querySelector(`.jdc-collected-badge[data-jdc-id="${escapeCSS(id)}"]`)) return;
+        if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
         const badge = document.createElement('div');
         badge.className = 'jdc-collected-badge';
         badge.dataset.jdcId = id;
@@ -182,8 +197,14 @@
 
     function applyCollected(ids) {
         collectedIds = new Set(ids || []);
-        document.querySelectorAll('.jdc-collected-badge').forEach(badge => { if (!collectedIds.has(badge.dataset.jdcId || '')) badge.remove(); });
-        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => { const id = movieIdFromURL(anchor.href); if (id && collectedIds.has(id)) addCardBadge(anchor, id); });
+        document.querySelectorAll('.jdc-collected-badge').forEach(badge => {
+            if (!collectedIds.has(badge.dataset.jdcId || '')) badge.remove();
+        });
+        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => {
+            const id = movieIdFromURL(anchor.href);
+            if (id && collectedIds.has(id)) addCardBadge(anchor, id);
+        });
+
         const current = currentMovieId();
         let detailBadge = document.getElementById('jdc-detail-collected');
         if (current && collectedIds.has(current)) {
@@ -196,18 +217,26 @@
                 document.body.appendChild(detailBadge);
             }
         } else if (detailBadge) detailBadge.remove();
-        if (batchMode) refreshBatchMarkers();
+
+        if (batchMode) scheduleBatchRefresh();
     }
 
     function updateBatchBar() {
         const count = document.getElementById('jdc-batch-count');
-        if (count) count.textContent = `已选择 ${batchSelected.size} 部`;
+        const desiredText = `已选择 ${batchSelected.size} 部`;
+        if (count && count.textContent !== desiredText) count.textContent = desiredText;
+
         const start = document.getElementById('jdc-batch-start');
-        if (start) { start.disabled = batchSelected.size === 0; start.style.opacity = batchSelected.size === 0 ? '0.45' : '1'; }
+        if (start) {
+            const disabled = batchSelected.size === 0;
+            if (start.disabled !== disabled) start.disabled = disabled;
+            const opacity = disabled ? '0.45' : '1';
+            if (start.style.opacity !== opacity) start.style.opacity = opacity;
+        }
     }
 
     function markerFor(host, id) {
-        let marker = host.querySelector(`.jdc-batch-marker[data-jdc-id="${CSS.escape(id)}"]`);
+        let marker = host.querySelector(`.jdc-batch-marker[data-jdc-id="${escapeCSS(id)}"]`);
         if (!marker) {
             if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
             marker = document.createElement('div');
@@ -216,9 +245,12 @@
             Object.assign(marker.style, { position: 'absolute', top: '6px', left: '6px', zIndex: '30', width: '28px', height: '28px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.35)', color: '#fff', fontSize: '17px', fontWeight: '700', pointerEvents: 'none' });
             host.appendChild(marker);
         }
+
         const selected = batchSelected.has(id);
-        marker.textContent = selected ? '✓' : '';
-        marker.style.background = selected ? 'rgba(0,122,255,.96)' : 'rgba(0,0,0,.48)';
+        const desiredText = selected ? '✓' : '';
+        const desiredBackground = selected ? 'rgba(0,122,255,.96)' : 'rgba(0,0,0,.48)';
+        if (marker.textContent !== desiredText) marker.textContent = desiredText;
+        if (marker.style.background !== desiredBackground) marker.style.background = desiredBackground;
         return marker;
     }
 
@@ -228,6 +260,14 @@
         updateBatchBar();
     }
 
+    function scheduleBatchRefresh() {
+        if (!batchMode || batchRefreshTimer !== null) return;
+        batchRefreshTimer = setTimeout(() => {
+            batchRefreshTimer = null;
+            refreshBatchMarkers();
+        }, 80);
+    }
+
     function removeBatchUI() {
         document.querySelectorAll('.jdc-batch-marker').forEach(element => element.remove());
         document.getElementById('jdc-batch-bar')?.remove();
@@ -235,6 +275,8 @@
 
     function stopBatchSelection() {
         batchMode = false;
+        if (batchRefreshTimer !== null) clearTimeout(batchRefreshTimer);
+        batchRefreshTimer = null;
         batchSelected.clear();
         removeBatchUI();
     }
@@ -248,43 +290,85 @@
     function batchClick(event) {
         if (!batchMode) return;
         const target = event.target instanceof Element ? event.target : null;
-        const anchor = target?.closest('a[href*="/v/"]');
+        if (!target || target.closest('#jdc-batch-bar')) return;
+        const anchor = target.closest('a[href*="/v/"]');
         if (!anchor) return;
         const id = movieIdFromURL(anchor.href);
         if (!id) return;
+
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
+
+        if (collectedIds.has(id)) {
+            batchSelected.delete(id);
+            scheduleBatchRefresh();
+            return;
+        }
+
         if (batchSelected.has(id)) batchSelected.delete(id);
         else batchSelected.set(id, { id, url: new URL(anchor.href, location.href).href });
-        refreshBatchMarkers();
+        scheduleBatchRefresh();
     }
 
     function startBatchSelection() {
         if (currentMovieId()) return 0;
         const cards = uniqueMovieCards();
         if (!cards.length) return 0;
+
         stopBatchSelection();
         batchMode = true;
+
         const bar = document.createElement('div');
         bar.id = 'jdc-batch-bar';
-        Object.assign(bar.style, { position: 'fixed', left: '10px', right: '10px', bottom: '12px', zIndex: '2147483640', minHeight: '54px', padding: '8px 10px', borderRadius: '16px', background: 'rgba(20,20,22,.94)', boxShadow: '0 3px 16px rgba(0,0,0,.32)', display: 'flex', alignItems: 'center', gap: '10px', color: '#fff', fontFamily: '-apple-system,BlinkMacSystemFont,sans-serif' });
-        bar.innerHTML = '<div id="jdc-batch-count" style="flex:1;font-size:14px;font-weight:600">已选择 0 部</div><button id="jdc-batch-cancel" style="border:0;border-radius:12px;padding:9px 13px;background:#3a3a3c;color:#fff;font-size:14px">取消</button><button id="jdc-batch-start" disabled style="border:0;border-radius:12px;padding:9px 13px;background:#0a84ff;color:#fff;font-size:14px;font-weight:600;opacity:.45">开始采集</button>';
+        Object.assign(bar.style, { position: 'fixed', left: '10px', right: '10px', bottom: '12px', zIndex: '2147483640', minHeight: '54px', padding: '8px 10px', borderRadius: '16px', background: 'rgba(20,20,22,.94)', boxShadow: '0 3px 16px rgba(0,0,0,.32)', display: 'flex', alignItems: 'center', gap: '10px', color: '#fff', fontFamily: '-apple-system,BlinkMacSystemFont,sans-serif', pointerEvents: 'auto' });
+        bar.innerHTML = '<div id="jdc-batch-count" style="flex:1;font-size:14px;font-weight:600">已选择 0 部</div><button id="jdc-batch-cancel" type="button" style="border:0;border-radius:12px;padding:9px 13px;background:#3a3a3c;color:#fff;font-size:14px">取消</button><button id="jdc-batch-start" type="button" disabled style="border:0;border-radius:12px;padding:9px 13px;background:#0a84ff;color:#fff;font-size:14px;font-weight:600;opacity:.45">开始采集</button>';
         document.body.appendChild(bar);
-        document.getElementById('jdc-batch-cancel')?.addEventListener('click', event => { event.preventDefault(); stopBatchSelection(); });
-        document.getElementById('jdc-batch-start')?.addEventListener('click', event => { event.preventDefault(); finishBatchSelection(); });
+
+        document.getElementById('jdc-batch-cancel')?.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            stopBatchSelection();
+        });
+        document.getElementById('jdc-batch-start')?.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            finishBatchSelection();
+        });
+
         refreshBatchMarkers();
         return cards.length;
     }
 
     document.addEventListener('click', captureMovieOrigin, true);
     document.addEventListener('click', batchClick, true);
-    window.addEventListener('pageshow', () => { scheduleVisibleReport(); setTimeout(maybeRestoreOrigin, 30); });
 
-    const observer = new MutationObserver(() => { scheduleVisibleReport(); maybeRestoreOrigin(); if (batchMode) refreshBatchMarkers(); });
+    window.addEventListener('pageshow', () => {
+        scheduleVisibleReport();
+        setTimeout(maybeRestoreOrigin, 30);
+    });
+
+    const observer = new MutationObserver(mutations => {
+        scheduleVisibleReport();
+        maybeRestoreOrigin();
+        if (!batchMode) return;
+
+        const hasExternalMutation = mutations.some(mutation => {
+            const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+            return !target || (!target.closest?.('#jdc-batch-bar') && !target.closest?.('.jdc-batch-marker') && !target.closest?.('.jdc-collected-badge'));
+        });
+        if (hasExternalMutation) scheduleBatchRefresh();
+    });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener('load', () => { scheduleVisibleReport(); setTimeout(maybeRestoreOrigin, 30); }, { once: true });
+
+    window.addEventListener('load', () => {
+        scheduleVisibleReport();
+        setTimeout(maybeRestoreOrigin, 30);
+    }, { once: true });
 
     window.JavDBCollect = { collectCurrent, applyCollected, reportVisible: scheduleVisibleReport, armReturnToOrigin, restoreOrigin: maybeRestoreOrigin, startBatchSelection, stopBatchSelection, isVRPage };
-    setTimeout(() => { scheduleVisibleReport(); maybeRestoreOrigin(); }, 250);
+    setTimeout(() => {
+        scheduleVisibleReport();
+        maybeRestoreOrigin();
+    }, 250);
 })();
