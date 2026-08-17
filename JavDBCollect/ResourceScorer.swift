@@ -6,6 +6,8 @@ struct ScoredCandidate {
 }
 
 enum ResourceScorer {
+    static let minimumSizeGB = 1.0
+
     private struct CandidateInfo {
         let candidate: MagnetCandidate
         let isSubtitle: Bool
@@ -48,6 +50,8 @@ enum ResourceScorer {
     }
 
     private static func makeInfo(_ candidate: MagnetCandidate) -> CandidateInfo? {
+        guard candidate.sizeGB >= minimumSizeGB else { return nil }
+
         let combined = ([candidate.name, candidate.meta] + candidate.tags).joined(separator: " ").lowercased()
         if isISO(combined) { return nil }
 
