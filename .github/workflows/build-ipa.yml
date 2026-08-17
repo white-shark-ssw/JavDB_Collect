@@ -12,8 +12,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer || true
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Build unsigned app
         run: |
@@ -45,3 +51,4 @@ jobs:
           name: JavDBCollect-IPA
           path: JavDBCollect.ipa
           if-no-files-found: error
+          retention-days: 30
