@@ -53,7 +53,7 @@ enum ResourceScorer {
         guard candidate.sizeGB >= minimumSizeGB else { return nil }
 
         let combined = ([candidate.name, candidate.meta] + candidate.tags).joined(separator: " ").lowercased()
-        if isISO(combined) { return nil }
+        if isISO(combined) || containsToken(combined, tokens: ["vr"]) { return nil }
 
         let subtitle = subtitleKeywords.contains(where: { combined.contains($0) }) || containsToken(combined, tokens: ["chs", "cht", "sub", "subtitle"]) || hasDashCMarker(candidate.name)
         let ultraClear = combined.contains("超清") || containsToken(combined, tokens: ["4k", "2160p", "uhd"])
