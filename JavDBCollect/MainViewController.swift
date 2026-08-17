@@ -147,7 +147,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private func showToast(_ text: String) {
         let label = UILabel()
         label.numberOfLines = 0
-        label.text = text
+        label.text = "  \(text)  "
         label.textAlignment = .center
         label.font = .systemFont(ofSize: 14, weight: .medium)
         label.textColor = .white
@@ -159,11 +159,9 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             label.bottomAnchor.constraint(equalTo: floatingButton.topAnchor, constant: -16),
-            label.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.8),
-            label.heightAnchor.constraint(greaterThanOrEqualToConstant: 42)
+            label.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.82),
+            label.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
-        label.layoutMargins = UIEdgeInsets(top: 10, left: 16, bottom: 10, right: 16)
-        label.isLayoutMarginsRelativeArrangement = true
         label.alpha = 0
         UIView.animate(withDuration: 0.2, animations: { label.alpha = 1 }) { _ in
             UIView.animate(withDuration: 0.25, delay: 1.6, options: [.curveEaseInOut], animations: { label.alpha = 0 }) { _ in label.removeFromSuperview() }
