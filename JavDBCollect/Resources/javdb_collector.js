@@ -6,53 +6,39 @@
     const restoreKey = 'jdcRestoreOrigin';
     let reportTimer = null;
     let restoreTimer = null;
+    let batchMode = false;
+    let batchSelected = new Map();
+    let collectedIds = new Set();
 
-    function post(message) {
-        if (bridge) bridge.postMessage(message);
-    }
-
-    function sessionGet(key) {
-        try { return sessionStorage.getItem(key); } catch (_) { return null; }
-    }
-
-    function sessionSet(key, value) {
-        try { sessionStorage.setItem(key, value); return true; } catch (_) { return false; }
-    }
-
-    function sessionRemove(key) {
-        try { sessionStorage.removeItem(key); } catch (_) {}
-    }
+    function post(message) { if (bridge) bridge.postMessage(message); }
+    function sessionGet(key) { try { return sessionStorage.getItem(key); } catch (_) { return null; } }
+    function sessionSet(key, value) { try { sessionStorage.setItem(key, value); return true; } catch (_) { return false; } }
+    function sessionRemove(key) { try { sessionStorage.removeItem(key); } catch (_) {} }
 
     function normalizedPageURL(value) {
-        try {
-            const url = new URL(value, location.href);
-            url.hash = '';
-            return url.href;
-        } catch (_) {
-            return String(value || '');
-        }
+        try { const url = new URL(value, location.href); url.hash = ''; return url.href; } catch (_) { return String(value || ''); }
     }
 
     function movieIdFromURL(value) {
-        try {
-            const url = new URL(value, location.href);
-            const match = url.pathname.match(/^\/v\/([^/?#]+)/);
-            return match ? match[1] : null;
-        } catch (_) {
-            return null;
-        }
+        try { const url = new URL(value, location.href); const match = url.pathname.match(/^\/v\/([^/?#]+)/); return match ? match[1] : null; } catch (_) { return null; }
     }
 
-    function currentMovieId() {
-        return movieIdFromURL(location.href);
+    function currentMovieId() { return movieIdFromURL(location.href); }
+
+    function uniqueMovieCards() {
+        const map = new Map();
+        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => {
+            const id = movieIdFromURL(anchor.href);
+            if (!id || map.has(id)) return;
+            const host = anchor.closest('.item') || anchor.closest('.movie-list .item') || anchor;
+            if (!host.querySelector('img')) return;
+            map.set(id, { id, url: new URL(anchor.href, location.href).href, anchor, host });
+        });
+        return Array.from(map.values());
     }
 
     function visibleMovieIds() {
-        const ids = new Set();
-        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => {
-            const id = movieIdFromURL(anchor.href);
-            if (id) ids.add(id);
-        });
+        const ids = new Set(uniqueMovieCards().map(item => item.id));
         const current = currentMovieId();
         if (current) ids.add(current);
         return Array.from(ids);
@@ -64,6 +50,7 @@
     }
 
     function captureMovieOrigin(event) {
+        if (batchMode) return;
         const target = event.target instanceof Element ? event.target : null;
         const anchor = target?.closest('a[href*="/v/"]');
         if (!anchor) return;
@@ -71,14 +58,7 @@
         if (!id) return;
         const host = anchor.closest('.item') || anchor;
         const rect = host.getBoundingClientRect();
-        const state = {
-            id,
-            url: normalizedPageURL(location.href),
-            scrollY: Math.max(window.scrollY || document.documentElement.scrollTop || 0, 0),
-            viewportTop: Number.isFinite(rect.top) ? rect.top : 0,
-            capturedAt: Date.now()
-        };
-        sessionSet(originKey, JSON.stringify(state));
+        sessionSet(originKey, JSON.stringify({ id, url: normalizedPageURL(location.href), scrollY: Math.max(window.scrollY || document.documentElement.scrollTop || 0, 0), viewportTop: Number.isFinite(rect.top) ? rect.top : 0, capturedAt: Date.now() }));
     }
 
     function armReturnToOrigin(id) {
@@ -87,52 +67,37 @@
             if (!origin || origin.id !== id || !origin.url) return false;
             sessionSet(restoreKey, JSON.stringify(origin));
             return true;
-        } catch (_) {
-            return false;
-        }
+        } catch (_) { return false; }
     }
 
-    function findMovieAnchor(id) {
-        return Array.from(document.querySelectorAll('a[href*="/v/"]')).find(anchor => movieIdFromURL(anchor.href) === id) || null;
-    }
+    function findMovieAnchor(id) { return Array.from(document.querySelectorAll('a[href*="/v/"]')).find(anchor => movieIdFromURL(anchor.href) === id) || null; }
 
     function maybeRestoreOrigin() {
         if (restoreTimer !== null) return;
         let state;
         try { state = JSON.parse(sessionGet(restoreKey) || 'null'); } catch (_) { state = null; }
-        if (!state || !state.id || !state.url) return;
-        if (normalizedPageURL(location.href) !== state.url) return;
+        if (!state || !state.id || !state.url || normalizedPageURL(location.href) !== state.url) return;
 
         let attempts = 0;
         let foundCount = 0;
         restoreTimer = -1;
-
         const step = () => {
             attempts += 1;
             const savedY = Math.max(Number(state.scrollY) || 0, 0);
             const anchor = findMovieAnchor(state.id);
-            if (!anchor) {
-                window.scrollTo(0, savedY);
-            } else {
+            if (!anchor) window.scrollTo(0, savedY);
+            else {
                 const host = anchor.closest('.item') || anchor;
                 const desiredTop = Number(state.viewportTop);
                 if (Number.isFinite(desiredTop)) {
                     const delta = host.getBoundingClientRect().top - desiredTop;
                     if (Math.abs(delta) > 2) window.scrollBy(0, delta);
-                } else {
-                    host.scrollIntoView({ block: 'center', behavior: 'auto' });
-                }
+                } else host.scrollIntoView({ block: 'center', behavior: 'auto' });
                 foundCount += 1;
             }
-
-            if ((foundCount >= 3 && attempts >= 3) || attempts >= 24) {
-                sessionRemove(restoreKey);
-                restoreTimer = null;
-                return;
-            }
+            if ((foundCount >= 3 && attempts >= 3) || attempts >= 24) { sessionRemove(restoreKey); restoreTimer = null; return; }
             restoreTimer = setTimeout(step, foundCount > 0 ? 220 : 160);
         };
-
         step();
     }
 
@@ -144,10 +109,7 @@
             const match = text.match(/(?:番號|番号|ID)\s*[:：]?\s*([A-Za-z0-9]+[-_][A-Za-z0-9]+)/i);
             if (match) code = match[1].toUpperCase();
         });
-        if (!code) {
-            const match = document.title.match(/\b([A-Za-z]{2,12}[-_]\d{2,6})\b/i);
-            if (match) code = match[1].toUpperCase();
-        }
+        if (!code) { const match = document.title.match(/\b([A-Za-z]{2,12}[-_]\d{2,6})\b/i); if (match) code = match[1].toUpperCase(); }
         return code;
     }
 
@@ -170,7 +132,6 @@
         const rows = Array.from(document.querySelectorAll('#magnets-content .item'));
         const candidates = [];
         const seen = new Set();
-
         function appendFromRow(row) {
             const anchor = row.querySelector('a[href^="magnet:"]');
             if (!anchor || seen.has(anchor.href)) return;
@@ -180,26 +141,28 @@
             const tags = Array.from(row.querySelectorAll('.tag')).map(tag => (tag.textContent || '').trim()).filter(Boolean);
             candidates.push({ magnet: anchor.href, name, meta, tags, sizeGB: parseSizeGB(meta), fileCount: parseFileCount(meta) });
         }
-
         rows.forEach(appendFromRow);
-        if (!rows.length) {
-            document.querySelectorAll('a[href^="magnet:"]').forEach(anchor => appendFromRow(anchor.closest('.item') || anchor.parentElement || anchor));
-        }
+        if (!rows.length) document.querySelectorAll('a[href^="magnet:"]').forEach(anchor => appendFromRow(anchor.closest('.item') || anchor.parentElement || anchor));
         return candidates;
+    }
+
+    function containsVRToken(text) { return /(^|[^a-z0-9])vr(?=$|[^a-z0-9])/i.test(String(text || '')); }
+
+    function isVRPage() {
+        const parts = [document.title, document.querySelector('h2.title, .video-title, .title.is-4')?.innerText || ''];
+        document.querySelectorAll('.tag, .tags .tag, .video-meta-panel, .panel-block').forEach(element => parts.push(element.innerText || element.textContent || ''));
+        return containsVRToken(parts.join(' '));
     }
 
     function collectCurrent() {
         const javdbId = currentMovieId();
         if (!javdbId) return JSON.stringify({ error: 'not_detail_page' });
-
         const titleElement = document.querySelector('h2.title, .video-title, .title.is-4');
         const rawTitle = (titleElement?.innerText || document.title.split('|')[0] || '').replace(/\s+/g, ' ').trim();
         const code = extractCode();
         const title = rawTitle || code || javdbId;
         const cover = document.querySelector('.video-cover img, .column-video-cover img, img[src*="cover"]');
-        const candidates = magnetCandidates();
-
-        return JSON.stringify({ javdbId, code: code || javdbId, title, coverUrl: cover?.src || '', candidates });
+        return JSON.stringify({ javdbId, code: code || javdbId, title, coverUrl: cover?.src || '', candidates: magnetCandidates(), isVR: isVRPage() });
     }
 
     function addCardBadge(anchor, id) {
@@ -213,64 +176,115 @@
         badge.className = 'jdc-collected-badge';
         badge.dataset.jdcId = id;
         badge.textContent = '✓ 已采集';
-        Object.assign(badge.style, {
-            position: 'absolute', top: '6px', right: '6px', zIndex: '20', padding: '3px 7px', borderRadius: '10px',
-            background: 'rgba(0,145,90,.92)', color: '#fff', fontSize: '12px', lineHeight: '16px', fontWeight: '600',
-            boxShadow: '0 1px 4px rgba(0,0,0,.25)', pointerEvents: 'none'
-        });
+        Object.assign(badge.style, { position: 'absolute', top: '6px', right: '6px', zIndex: '20', padding: '3px 7px', borderRadius: '10px', background: 'rgba(0,145,90,.92)', color: '#fff', fontSize: '12px', lineHeight: '16px', fontWeight: '600', boxShadow: '0 1px 4px rgba(0,0,0,.25)', pointerEvents: 'none' });
         host.appendChild(badge);
     }
 
     function applyCollected(ids) {
-        const collected = new Set(ids || []);
-        document.querySelectorAll('.jdc-collected-badge').forEach(badge => {
-            if (!collected.has(badge.dataset.jdcId || '')) badge.remove();
-        });
-
-        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => {
-            const id = movieIdFromURL(anchor.href);
-            if (id && collected.has(id)) addCardBadge(anchor, id);
-        });
-
+        collectedIds = new Set(ids || []);
+        document.querySelectorAll('.jdc-collected-badge').forEach(badge => { if (!collectedIds.has(badge.dataset.jdcId || '')) badge.remove(); });
+        document.querySelectorAll('a[href*="/v/"]').forEach(anchor => { const id = movieIdFromURL(anchor.href); if (id && collectedIds.has(id)) addCardBadge(anchor, id); });
         const current = currentMovieId();
         let detailBadge = document.getElementById('jdc-detail-collected');
-        if (current && collected.has(current)) {
+        if (current && collectedIds.has(current)) {
             if (!detailBadge) {
                 detailBadge = document.createElement('div');
                 detailBadge.id = 'jdc-detail-collected';
                 detailBadge.dataset.jdcId = current;
                 detailBadge.textContent = '✓ 已采集';
-                Object.assign(detailBadge.style, {
-                    position: 'fixed', top: '72px', right: '12px', zIndex: '2147483000', padding: '6px 10px', borderRadius: '14px',
-                    background: 'rgba(0,145,90,.94)', color: '#fff', fontSize: '13px', lineHeight: '18px', fontWeight: '600',
-                    boxShadow: '0 2px 8px rgba(0,0,0,.25)', pointerEvents: 'none'
-                });
+                Object.assign(detailBadge.style, { position: 'fixed', top: '72px', right: '12px', zIndex: '2147483000', padding: '6px 10px', borderRadius: '14px', background: 'rgba(0,145,90,.94)', color: '#fff', fontSize: '13px', lineHeight: '18px', fontWeight: '600', boxShadow: '0 2px 8px rgba(0,0,0,.25)', pointerEvents: 'none' });
                 document.body.appendChild(detailBadge);
             }
-        } else if (detailBadge) {
-            detailBadge.remove();
+        } else if (detailBadge) detailBadge.remove();
+        if (batchMode) refreshBatchMarkers();
+    }
+
+    function updateBatchBar() {
+        const count = document.getElementById('jdc-batch-count');
+        if (count) count.textContent = `已选择 ${batchSelected.size} 部`;
+        const start = document.getElementById('jdc-batch-start');
+        if (start) { start.disabled = batchSelected.size === 0; start.style.opacity = batchSelected.size === 0 ? '0.45' : '1'; }
+    }
+
+    function markerFor(host, id) {
+        let marker = host.querySelector(`.jdc-batch-marker[data-jdc-id="${CSS.escape(id)}"]`);
+        if (!marker) {
+            if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+            marker = document.createElement('div');
+            marker.className = 'jdc-batch-marker';
+            marker.dataset.jdcId = id;
+            Object.assign(marker.style, { position: 'absolute', top: '6px', left: '6px', zIndex: '30', width: '28px', height: '28px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fff', boxShadow: '0 1px 5px rgba(0,0,0,.35)', color: '#fff', fontSize: '17px', fontWeight: '700', pointerEvents: 'none' });
+            host.appendChild(marker);
         }
+        const selected = batchSelected.has(id);
+        marker.textContent = selected ? '✓' : '';
+        marker.style.background = selected ? 'rgba(0,122,255,.96)' : 'rgba(0,0,0,.48)';
+        return marker;
+    }
+
+    function refreshBatchMarkers() {
+        if (!batchMode) return;
+        uniqueMovieCards().forEach(item => markerFor(item.host, item.id));
+        updateBatchBar();
+    }
+
+    function removeBatchUI() {
+        document.querySelectorAll('.jdc-batch-marker').forEach(element => element.remove());
+        document.getElementById('jdc-batch-bar')?.remove();
+    }
+
+    function stopBatchSelection() {
+        batchMode = false;
+        batchSelected.clear();
+        removeBatchUI();
+    }
+
+    function finishBatchSelection() {
+        const items = Array.from(batchSelected.values());
+        stopBatchSelection();
+        if (items.length) post({ type: 'batchCollect', items });
+    }
+
+    function batchClick(event) {
+        if (!batchMode) return;
+        const target = event.target instanceof Element ? event.target : null;
+        const anchor = target?.closest('a[href*="/v/"]');
+        if (!anchor) return;
+        const id = movieIdFromURL(anchor.href);
+        if (!id) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (batchSelected.has(id)) batchSelected.delete(id);
+        else batchSelected.set(id, { id, url: new URL(anchor.href, location.href).href });
+        refreshBatchMarkers();
+    }
+
+    function startBatchSelection() {
+        if (currentMovieId()) return 0;
+        const cards = uniqueMovieCards();
+        if (!cards.length) return 0;
+        stopBatchSelection();
+        batchMode = true;
+        const bar = document.createElement('div');
+        bar.id = 'jdc-batch-bar';
+        Object.assign(bar.style, { position: 'fixed', left: '10px', right: '10px', bottom: '12px', zIndex: '2147483640', minHeight: '54px', padding: '8px 10px', borderRadius: '16px', background: 'rgba(20,20,22,.94)', boxShadow: '0 3px 16px rgba(0,0,0,.32)', display: 'flex', alignItems: 'center', gap: '10px', color: '#fff', fontFamily: '-apple-system,BlinkMacSystemFont,sans-serif' });
+        bar.innerHTML = '<div id="jdc-batch-count" style="flex:1;font-size:14px;font-weight:600">已选择 0 部</div><button id="jdc-batch-cancel" style="border:0;border-radius:12px;padding:9px 13px;background:#3a3a3c;color:#fff;font-size:14px">取消</button><button id="jdc-batch-start" disabled style="border:0;border-radius:12px;padding:9px 13px;background:#0a84ff;color:#fff;font-size:14px;font-weight:600;opacity:.45">开始采集</button>';
+        document.body.appendChild(bar);
+        document.getElementById('jdc-batch-cancel')?.addEventListener('click', event => { event.preventDefault(); stopBatchSelection(); });
+        document.getElementById('jdc-batch-start')?.addEventListener('click', event => { event.preventDefault(); finishBatchSelection(); });
+        refreshBatchMarkers();
+        return cards.length;
     }
 
     document.addEventListener('click', captureMovieOrigin, true);
-    window.addEventListener('pageshow', () => {
-        scheduleVisibleReport();
-        setTimeout(maybeRestoreOrigin, 30);
-    });
+    document.addEventListener('click', batchClick, true);
+    window.addEventListener('pageshow', () => { scheduleVisibleReport(); setTimeout(maybeRestoreOrigin, 30); });
 
-    const observer = new MutationObserver(() => {
-        scheduleVisibleReport();
-        maybeRestoreOrigin();
-    });
+    const observer = new MutationObserver(() => { scheduleVisibleReport(); maybeRestoreOrigin(); if (batchMode) refreshBatchMarkers(); });
     observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener('load', () => {
-        scheduleVisibleReport();
-        setTimeout(maybeRestoreOrigin, 30);
-    }, { once: true });
+    window.addEventListener('load', () => { scheduleVisibleReport(); setTimeout(maybeRestoreOrigin, 30); }, { once: true });
 
-    window.JavDBCollect = { collectCurrent, applyCollected, reportVisible: scheduleVisibleReport, armReturnToOrigin, restoreOrigin: maybeRestoreOrigin };
-    setTimeout(() => {
-        scheduleVisibleReport();
-        maybeRestoreOrigin();
-    }, 250);
+    window.JavDBCollect = { collectCurrent, applyCollected, reportVisible: scheduleVisibleReport, armReturnToOrigin, restoreOrigin: maybeRestoreOrigin, startBatchSelection, stopBatchSelection, isVRPage };
+    setTimeout(() => { scheduleVisibleReport(); maybeRestoreOrigin(); }, 250);
 })();
