@@ -8,7 +8,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     private var collectorScriptSource: String?
     private var floatingCenterXConstraint: NSLayoutConstraint!
     private var floatingCenterYConstraint: NSLayoutConstraint!
+    private var floatingDragStartCenter = CGPoint.zero
+    private var floatingDragStartTouch = CGPoint.zero
     private var isDraggingFloatingButton = false
+    private var didRestoreFloatingButtonPosition = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -20,7 +23,10 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if !isDraggingFloatingButton { restoreFloatingButtonPosition() }
+        if !didRestoreFloatingButtonPosition {
+            restoreFloatingButtonPosition()
+            didRestoreFloatingButtonPosition = true
+        }
     }
 
     deinit { webView?.configuration.userContentController.removeScriptMessageHandler(forName: "javdbCollect") }
@@ -64,15 +70,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         floatingButton.layer.shadowRadius = 5
         floatingButton.layer.shadowOffset = CGSize(width: 0, height: 2)
         floatingButton.setImage(UIImage(systemName: "tray.and.arrow.down.fill"), for: .normal)
-        floatingButton.menu = UIMenu(children: [
-            UIAction(title: "采集当前", image: UIImage(systemName: "plus.circle.fill")) { [weak self] _ in self?.collectCurrentMovie() },
-            UIAction(title: "采集中心", image: UIImage(systemName: "list.bullet.rectangle")) { [weak self] _ in self?.showCollectionCenter() },
-            UIAction(title: "刷新页面", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in self?.webView.reload() }
-        ])
-        floatingButton.showsMenuAsPrimaryAction = true
+        floatingButton.addTarget(self, action: #selector(showFloatingMenu), for: .touchUpInside)
 
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleFloatingButtonLongPress(_:)))
         longPress.minimumPressDuration = 0.35
+        longPress.allowableMovement = 20
         longPress.cancelsTouchesInView = true
         floatingButton.addGestureRecognizer(longPress)
         view.addSubview(floatingButton)
@@ -85,6 +87,20 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
             floatingCenterXConstraint,
             floatingCenterYConstraint
         ])
+    }
+
+    @objc private func showFloatingMenu() {
+        guard !isDraggingFloatingButton else { return }
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "采集当前", style: .default) { [weak self] _ in self?.collectCurrentMovie() })
+        sheet.addAction(UIAlertAction(title: "采集中心", style: .default) { [weak self] _ in self?.showCollectionCenter() })
+        sheet.addAction(UIAlertAction(title: "刷新页面", style: .default) { [weak self] _ in self?.webView.reload() })
+        sheet.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = floatingButton
+            popover.sourceRect = floatingButton.bounds
+        }
+        present(sheet, animated: true)
     }
 
     private func floatingMovementFrame() -> CGRect {
@@ -128,23 +144,23 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     @objc private func handleFloatingButtonLongPress(_ gesture: UILongPressGestureRecognizer) {
-        let point = clampedFloatingPoint(gesture.location(in: view))
         switch gesture.state {
         case .began:
             isDraggingFloatingButton = true
+            floatingDragStartCenter = CGPoint(x: floatingCenterXConstraint.constant, y: floatingCenterYConstraint.constant)
+            floatingDragStartTouch = gesture.location(in: view)
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            UIView.animate(withDuration: 0.15) { self.floatingButton.transform = CGAffineTransform(scaleX: 1.08, y: 1.08) }
-            floatingCenterXConstraint.constant = point.x
-            floatingCenterYConstraint.constant = point.y
+            UIView.animate(withDuration: 0.12) { self.floatingButton.transform = CGAffineTransform(scaleX: 1.08, y: 1.08) }
         case .changed:
+            let touch = gesture.location(in: view)
+            let target = CGPoint(x: floatingDragStartCenter.x + touch.x - floatingDragStartTouch.x, y: floatingDragStartCenter.y + touch.y - floatingDragStartTouch.y)
+            let point = clampedFloatingPoint(target)
             floatingCenterXConstraint.constant = point.x
             floatingCenterYConstraint.constant = point.y
         case .ended, .cancelled, .failed:
-            floatingCenterXConstraint.constant = point.x
-            floatingCenterYConstraint.constant = point.y
             saveFloatingButtonPosition()
             isDraggingFloatingButton = false
-            UIView.animate(withDuration: 0.18) { self.floatingButton.transform = .identity }
+            UIView.animate(withDuration: 0.16) { self.floatingButton.transform = .identity }
         default:
             break
         }
