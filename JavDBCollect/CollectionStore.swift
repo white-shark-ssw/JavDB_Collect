@@ -18,9 +18,7 @@ final class CollectionStore {
     private func openDatabase() {
         let baseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
         let databaseURL = baseURL.appendingPathComponent("javdb_collect.sqlite3")
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK {
-            print("[JavDBCollect] sqlite open failed: \(errorMessage)")
-        }
+        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK { print("[JavDBCollect] sqlite open failed: \(errorMessage)") }
     }
 
     private func createTable() {
@@ -115,11 +113,12 @@ final class CollectionStore {
         sqlite3_step(statement)
     }
 
-    func deleteCurrent(id: Int64) {
+    func delete(id: Int64, status: Int) {
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM collections WHERE id = ? AND status = 0;", -1, &statement, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, "DELETE FROM collections WHERE id = ? AND status = ?;", -1, &statement, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_int64(statement, 1, id)
+        sqlite3_bind_int(statement, 2, Int32(status))
         sqlite3_step(statement)
     }
 
