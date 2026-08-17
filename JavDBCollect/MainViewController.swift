@@ -179,6 +179,11 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         }
     }
 
+    private func armReturnToOrigin(javdbID: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: javdbID, options: .fragmentsAllowed), let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.JavDBCollect && window.JavDBCollect.armReturnToOrigin(\(json))")
+    }
+
     private func collectCurrentMovie() {
         ensureCollectorScript { [weak self] ready in
             guard let self else { return }
@@ -200,6 +205,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
                 }
                 guard let movie = envelope.moviePayload else { self.showAlert(title: "采集失败", message: "影片信息不完整。"); return }
                 if self.store.contains(javdbID: movie.javdbId) {
+                    self.armReturnToOrigin(javdbID: movie.javdbId)
                     self.showToast("✓ 已采集过 \(movie.code)")
                     self.refreshCollectedMarks()
                     return
@@ -219,6 +225,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
                     self.showAlert(title: "保存失败", message: "无法写入本地采集数据库。")
                     return
                 }
+                self.armReturnToOrigin(javdbID: movie.javdbId)
                 let detail = scored.candidate.meta.isEmpty ? scored.candidate.name : scored.candidate.meta
                 self.showToast("✓ 已采集 \(movie.code)\n\(detail)")
                 self.refreshCollectedMarks()
@@ -254,7 +261,13 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         applyCollected(ids: store.collectedIDs(for: ids))
     }
 
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { refreshCollectedMarks() }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        refreshCollectedMarks()
+        ensureCollectorScript { [weak self] ready in
+            guard ready else { return }
+            self?.webView.evaluateJavaScript("window.JavDBCollect.restoreOrigin()")
+        }
+    }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url { webView.load(URLRequest(url: url)) }
