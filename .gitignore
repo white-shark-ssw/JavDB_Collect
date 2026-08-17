@@ -1,0 +1,16 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# XcodeGen generated project can be regenerated from project.yml
+JavDBCollect.xcodeproj/
+
+# macOS
+.DS_Store
+
+# IPA artifacts
+Payload/
+*.ipa
