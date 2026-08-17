@@ -7,6 +7,7 @@ struct ScoredCandidate {
 
 enum ResourceScorer {
     static let minimumSizeGB = 1.0
+    static let maximumFileCount = 10
 
     private struct CandidateInfo {
         let candidate: MagnetCandidate
@@ -51,6 +52,7 @@ enum ResourceScorer {
 
     private static func makeInfo(_ candidate: MagnetCandidate) -> CandidateInfo? {
         guard candidate.sizeGB >= minimumSizeGB else { return nil }
+        if candidate.fileCount > maximumFileCount { return nil }
 
         let combined = ([candidate.name, candidate.meta] + candidate.tags).joined(separator: " ").lowercased()
         if isISO(combined) || containsToken(combined, tokens: ["vr"]) { return nil }
@@ -62,7 +64,7 @@ enum ResourceScorer {
 
         var effectiveSize = max(candidate.sizeGB, 0)
         if singleMP4 { effectiveSize -= 0.75 }
-        if candidate.fileCount > 1 { effectiveSize += 0.5 + min(Double(candidate.fileCount), 10) * 0.03 }
+        if candidate.fileCount > 1 { effectiveSize += 0.5 + Double(candidate.fileCount) * 0.03 }
         if folderKeywords.contains(where: { combined.contains($0) }) { effectiveSize += 0.3 }
         if ultraClear { effectiveSize += 0.35 }
         else if highDefinition { effectiveSize += 0.15 }
