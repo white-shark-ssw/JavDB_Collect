@@ -8,20 +8,40 @@ final class CollectionStore {
 
     private var db: OpaquePointer?
 
+    private var databaseURL: URL {
+        let baseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        return baseURL.appendingPathComponent("javdb_collect.sqlite3")
+    }
+
     private init() {
-        openDatabase()
+        _ = openDatabase()
         createTable()
     }
 
-    deinit { if let db { sqlite3_close(db) } }
+    deinit { closeDatabase() }
 
-    private func openDatabase() {
-        let baseURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-        let databaseURL = baseURL.appendingPathComponent("javdb_collect.sqlite3")
-        if sqlite3_open(databaseURL.path, &db) != SQLITE_OK { print("[JavDBCollect] sqlite open failed: \(errorMessage)") }
+    @discardableResult
+    private func openDatabase() -> Bool {
+        closeDatabase()
+        var handle: OpaquePointer?
+        let result = sqlite3_open(databaseURL.path, &handle)
+        guard result == SQLITE_OK, let handle else {
+            if let handle { sqlite3_close(handle) }
+            db = nil
+            print("[JavDBCollect] sqlite open failed: \(result)")
+            return false
+        }
+        db = handle
+        return true
+    }
+
+    private func closeDatabase() {
+        if let db { sqlite3_close(db) }
+        db = nil
     }
 
     private func createTable() {
+        guard db != nil else { return }
         let sql = """
         CREATE TABLE IF NOT EXISTS collections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,6 +140,87 @@ final class CollectionStore {
         sqlite3_bind_int64(statement, 1, id)
         sqlite3_bind_int(statement, 2, Int32(status))
         sqlite3_step(statement)
+    }
+
+    func makeDatabaseExport() -> URL? {
+        guard let db else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let exportURL = FileManager.default.temporaryDirectory.appendingPathComponent("JavDBCollect-\(formatter.string(from: Date())).sqlite3")
+        try? FileManager.default.removeItem(at: exportURL)
+
+        var exportDB: OpaquePointer?
+        guard sqlite3_open(exportURL.path, &exportDB) == SQLITE_OK, let exportDB else {
+            if let exportDB { sqlite3_close(exportDB) }
+            return nil
+        }
+        defer { sqlite3_close(exportDB) }
+
+        guard let backup = sqlite3_backup_init(exportDB, "main", db, "main") else { return nil }
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
+            try? FileManager.default.removeItem(at: exportURL)
+            return nil
+        }
+        return exportURL
+    }
+
+    func importDatabase(from sourceURL: URL) -> Bool {
+        guard validateDatabase(at: sourceURL) else { return false }
+
+        let fileManager = FileManager.default
+        let stagingURL = fileManager.temporaryDirectory.appendingPathComponent("JavDBCollect-import-\(UUID().uuidString).sqlite3")
+        let backupURL = fileManager.temporaryDirectory.appendingPathComponent("JavDBCollect-before-import-\(UUID().uuidString).sqlite3")
+        try? fileManager.removeItem(at: stagingURL)
+        try? fileManager.removeItem(at: backupURL)
+
+        do {
+            try fileManager.copyItem(at: sourceURL, to: stagingURL)
+        } catch {
+            return false
+        }
+
+        closeDatabase()
+
+        do {
+            if fileManager.fileExists(atPath: databaseURL.path) { try fileManager.copyItem(at: databaseURL, to: backupURL) }
+            if fileManager.fileExists(atPath: databaseURL.path) { try fileManager.removeItem(at: databaseURL) }
+            try fileManager.moveItem(at: stagingURL, to: databaseURL)
+            guard openDatabase() else { throw NSError(domain: "JavDBCollect.Database", code: 1) }
+            createTable()
+            guard validateDatabase(at: databaseURL) else { throw NSError(domain: "JavDBCollect.Database", code: 2) }
+            try? fileManager.removeItem(at: backupURL)
+            return true
+        } catch {
+            closeDatabase()
+            try? fileManager.removeItem(at: databaseURL)
+            if fileManager.fileExists(atPath: backupURL.path) { try? fileManager.moveItem(at: backupURL, to: databaseURL) }
+            _ = openDatabase()
+            createTable()
+            try? fileManager.removeItem(at: stagingURL)
+            return false
+        }
+    }
+
+    private func validateDatabase(at url: URL) -> Bool {
+        var checkDB: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &checkDB, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let checkDB else {
+            if let checkDB { sqlite3_close(checkDB) }
+            return false
+        }
+        defer { sqlite3_close(checkDB) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(checkDB, "PRAGMA table_info(collections);", -1, &statement, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(statement) }
+
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let value = sqlite3_column_text(statement, 1) { columns.insert(String(cString: value)) }
+        }
+        let required: Set<String> = ["id", "javdb_id", "code", "title", "magnet", "status", "created_at", "updated_at"]
+        return required.isSubset(of: columns)
     }
 
     private func bind(_ value: String, to statement: OpaquePointer?, at index: Int32) {
