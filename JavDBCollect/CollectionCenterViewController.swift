@@ -43,6 +43,7 @@ final class CollectionCenterViewController: UIViewController, UITableViewDataSou
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        reloadData()
         updateToolbar()
     }
 
@@ -56,7 +57,11 @@ final class CollectionCenterViewController: UIViewController, UITableViewDataSou
     private var currentStatus: Int { segmentedControl.selectedSegmentIndex == 0 ? 0 : 1 }
 
     private func reloadData() {
-        records = store.fetch(status: currentStatus)
+        let current = store.fetch(status: 0)
+        let history = store.fetch(status: 1)
+        segmentedControl.setTitle("本次采集 \(current.count)", forSegmentAt: 0)
+        segmentedControl.setTitle("历史 \(history.count)", forSegmentAt: 1)
+        records = currentStatus == 0 ? current : history
         tableView.reloadData()
     }
 
