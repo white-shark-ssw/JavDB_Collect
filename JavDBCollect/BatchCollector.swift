@@ -39,7 +39,7 @@ private final class BatchWorker: NSObject, WKNavigationDelegate {
         configuration.userContentController = contentController
         configuration.websiteDataStore = .default()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        webView = WKWebView(frame: CGRect(x: -1200 - index * 10, y: -1200, width: 390, height: 844), configuration: configuration)
+        webView = WKWebView(frame: CGRect(x: CGFloat(-1200 - index * 10), y: -1200, width: 390, height: 844), configuration: configuration)
         super.init()
         webView.navigationDelegate = self
         webView.isUserInteractionEnabled = false
