@@ -21,6 +21,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         configureWebView()
         configureFloatingButton()
         loadHome()
+        DispatchQueue.main.async { [weak self] in self?.resumePersistedBatchIfNeeded() }
     }
 
     override func viewDidLayoutSubviews() {
@@ -80,7 +81,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         guard !isDraggingFloatingButton else { return }
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
         sheet.addAction(UIAlertAction(title: "采集当前", style: .default) { [weak self] _ in self?.collectCurrentMovie() })
-        if batchCollector?.isRunning == true {
+        if batchCollector?.hasTask == true {
             let running = UIAlertAction(title: "批量采集中…", style: .default); running.isEnabled = false; sheet.addAction(running)
         } else {
             sheet.addAction(UIAlertAction(title: "批量采集", style: .default) { [weak self] _ in self?.startBatchSelection() })
@@ -157,7 +158,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     private func armReturnToOrigin(javdbID: String) {
-        guard let data = try? JSONSerialization.data(withJSONObject: javdbID, options: .fragmentsAllowed), let json = String(data: data, encoding: .utf8) else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: javdbID, options: [.fragmentsAllowed]), let json = String(data: data, encoding: .utf8) else { return }
         webView.evaluateJavaScript("window.JavDBCollect && window.JavDBCollect.armReturnToOrigin(\(json))")
     }
 
@@ -185,7 +186,7 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
     }
 
     private func startBatchSelection() {
-        guard batchCollector?.isRunning != true else { showToast("已有批量采集任务正在进行", duration: 1.0); return }
+        guard batchCollector?.hasTask != true else { showToast("已有批量采集任务正在进行", duration: 1.0); return }
         ensureCollectorScript { [weak self] ready in
             guard let self else { return }
             guard ready else { self.showToast("页面采集脚本未就绪", duration: 1.0); return }
@@ -196,12 +197,26 @@ final class MainViewController: UIViewController, WKNavigationDelegate, WKUIDele
         }
     }
 
+    private func makeBatchCollector() -> BatchCollector? {
+        if let batchCollector { return batchCollector }
+        guard let script = collectorScriptSource, !script.isEmpty else { return nil }
+        let collector = BatchCollector(parentView: view, store: store, scriptSource: script, concurrency: 3)
+        batchCollector = collector
+        return collector
+    }
+
     private func beginBatchCollection(_ items: [BatchCollectItem]) {
         guard !items.isEmpty else { return }
-        guard batchCollector?.isRunning != true else { showToast("已有批量采集任务正在进行", duration: 1.0); return }
-        guard let script = collectorScriptSource, !script.isEmpty else { showToast("页面采集脚本未就绪", duration: 1.0); return }
-        if batchCollector == nil { batchCollector = BatchCollector(parentView: view, store: store, scriptSource: script) }
-        _ = batchCollector?.start(items: items, onProgress: { [weak self] processed, total in self?.updateBatchProgress(processed: processed, total: total) }, completion: { [weak self] summary in self?.finishBatchCollection(summary) })
+        guard batchCollector?.hasTask != true else { showToast("已有批量采集任务正在进行", duration: 1.0); return }
+        guard let collector = makeBatchCollector() else { showToast("页面采集脚本未就绪", duration: 1.0); return }
+        _ = collector.start(items: items, onProgress: { [weak self] processed, total in self?.updateBatchProgress(processed: processed, total: total) }, completion: { [weak self] summary in self?.finishBatchCollection(summary) })
+    }
+
+    private func resumePersistedBatchIfNeeded() {
+        guard BatchCollector.hasPersistedTask, let collector = makeBatchCollector(), collector.hasTask == false else { return }
+        if collector.resumePersisted(onProgress: { [weak self] processed, total in self?.updateBatchProgress(processed: processed, total: total) }, completion: { [weak self] summary in self?.finishBatchCollection(summary) }) {
+            showToast("继续上次批量采集", duration: 1.0)
+        }
     }
 
     private func updateBatchProgress(processed: Int, total: Int) {
