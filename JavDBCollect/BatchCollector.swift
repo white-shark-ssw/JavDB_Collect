@@ -20,6 +20,7 @@ struct BatchCollectSummary: Codable {
 
 private enum BatchWorkerResult {
     case movie(MoviePayload)
+    case empty(MoviePayload)
     case failed
 }
 
@@ -30,6 +31,7 @@ private final class BatchWorker: NSObject, WKNavigationDelegate {
     private var completion: ((BatchWorker, BatchCollectItem, BatchWorkerResult) -> Void)?
     private var parseAttempt = 0
     private var generation = 0
+    private let maxParseAttempts = 16
 
     init(index: Int, parentView: UIView, scriptSource: String) {
         self.index = index
@@ -76,17 +78,18 @@ private final class BatchWorker: NSObject, WKNavigationDelegate {
         webView.evaluateJavaScript("window.JavDBCollect && window.JavDBCollect.collectCurrent()") { [weak self] result, _ in
             guard let self, self.currentItem != nil, self.generation == currentGeneration else { return }
             if let json = result as? String, let data = json.data(using: .utf8), let envelope = try? JSONDecoder().decode(ParseEnvelope.self, from: data), let movie = envelope.moviePayload {
-                if movie.candidates.isEmpty && self.parseAttempt < 8 { self.scheduleRetry(generation: currentGeneration); return }
-                self.finish(.movie(movie), generation: currentGeneration)
+                if movie.isVR || !movie.candidates.isEmpty { self.finish(.movie(movie), generation: currentGeneration); return }
+                if self.parseAttempt < self.maxParseAttempts { self.scheduleRetry(generation: currentGeneration); return }
+                self.finish(.empty(movie), generation: currentGeneration)
                 return
             }
-            if self.parseAttempt < 8 { self.scheduleRetry(generation: currentGeneration) }
+            if self.parseAttempt < self.maxParseAttempts { self.scheduleRetry(generation: currentGeneration) }
             else { self.finish(.failed, generation: currentGeneration) }
         }
     }
 
     private func scheduleRetry(generation currentGeneration: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in self?.attemptParse(generation: currentGeneration) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.attemptParse(generation: currentGeneration) }
     }
 
     private func finish(_ result: BatchWorkerResult, generation currentGeneration: Int) {
@@ -126,7 +129,9 @@ final class BatchCollector: NSObject {
     private static let persistenceKey = "jdcBatchCollectorStateV1"
     private let store: CollectionStore
     private let workers: [BatchWorker]
+    private let maxTransientRetries = 2
     private var pending: [BatchCollectItem] = []
+    private var retryCounts: [String: Int] = [:]
     private var summary = BatchCollectSummary(total: 0)
     private var onProgress: ((Int, Int) -> Void)?
     private var onCompletion: ((BatchCollectSummary) -> Void)?
@@ -157,6 +162,7 @@ final class BatchCollector: NSObject {
     func start(items: [BatchCollectItem], onProgress: @escaping (Int, Int) -> Void, completion: @escaping (BatchCollectSummary) -> Void) -> Bool {
         guard !hasTask, !items.isEmpty else { return false }
         pending = deduplicated(items)
+        retryCounts.removeAll()
         summary = BatchCollectSummary(total: pending.count)
         self.onProgress = onProgress
         onCompletion = completion
@@ -171,6 +177,7 @@ final class BatchCollector: NSObject {
     func resumePersisted(onProgress: @escaping (Int, Int) -> Void, completion: @escaping (BatchCollectSummary) -> Void) -> Bool {
         guard !hasTask, let data = UserDefaults.standard.data(forKey: Self.persistenceKey), let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return false }
         pending = deduplicated(state.inFlight + state.pending)
+        retryCounts.removeAll()
         summary = state.summary
         if pending.isEmpty || summary.processed >= summary.total { Self.clearPersistedState(); return false }
         self.onProgress = onProgress
@@ -208,6 +215,7 @@ final class BatchCollector: NSObject {
             while !pending.isEmpty {
                 let item = pending.removeFirst()
                 if store.contains(javdbID: item.javdbID) {
+                    retryCounts[item.javdbID] = nil
                     summary.alreadyCollected += 1
                     onProgress?(summary.processed, summary.total)
                     continue
@@ -224,8 +232,13 @@ final class BatchCollector: NSObject {
         guard isRunning else { return }
         switch result {
         case .failed:
+            if requeueTransient(item) { scheduleWork(); return }
             summary.failed += 1
+        case .empty:
+            if requeueTransient(item) { scheduleWork(); return }
+            summary.filtered += 1
         case .movie(let movie):
+            retryCounts[item.javdbID] = nil
             if store.contains(javdbID: movie.javdbId) { summary.alreadyCollected += 1 }
             else if movie.isVR { summary.vrSkipped += 1 }
             else {
@@ -245,6 +258,16 @@ final class BatchCollector: NSObject {
         scheduleWork()
     }
 
+    private func requeueTransient(_ item: BatchCollectItem) -> Bool {
+        let retries = retryCounts[item.javdbID] ?? 0
+        guard retries < maxTransientRetries else { retryCounts[item.javdbID] = nil; return false }
+        let next = retries + 1
+        retryCounts[item.javdbID] = next
+        pending.append(item)
+        print("[JavDBCollect] retry batch item \(item.javdbID) \(next)/\(maxTransientRetries)")
+        return true
+    }
+
     private func finish() {
         guard hasTask else { return }
         workers.forEach { $0.cancel() }
@@ -257,6 +280,7 @@ final class BatchCollector: NSObject {
         onProgress = nil
         onCompletion = nil
         pending.removeAll()
+        retryCounts.removeAll()
         completion?(result)
     }
 
